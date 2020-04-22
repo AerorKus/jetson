@@ -1,0 +1,14 @@
+g++ -O2 -Wall final.cpp jetsontx2GPIO.c pid.cpp -pthread -o ofinal 
+
+g++ -O2 -Wall Srampi2c.cpp jetsontx2GPIO.c -o oSrampi2c
+
+g++ -O2 -Wall fifotest.cpp  -o ofifotest
+
+g++ -O2 -Wall pulsecount.cpp jetsontx2GPIO.c -pthread -o opulsecount
+
+g++ -O2 -Wall ymotors.cpp jetsontx2GPIO.c -pthread -o oymotors
+
+
+./ofifotest | sudo ./ofinal 
+
+
