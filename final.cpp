@@ -276,21 +276,15 @@ struct calc_Sramp_data Sramp_function(float d, float v_CV,float linear_ratio){
         float time;
 
         time_total=d/v_CV;
-        cout<<"total time = "<<time_total<<endl;
         curve_ratio=(1-linear_ratio)/4.0;
-        cout<<"curve ratio = "<<curve_ratio<<endl;
-
+     
         ta=2.0*curve_ratio*time_total;
         a=2*v_CV/ta;
-        cout<<"acceleration = "<<a<<endl;
-        cout<<"ta = "<<ta<<endl;
 
         seg_time=ta/2;
-        cout<<"seg_time = "<<seg_time<<endl;
 
         time=seg_time/9;
-        cout<<"time = "<<time<<endl;
-        int s=0;
+	   int s=0;
 
         while(time<ta){
                 if(time<=seg_time){
@@ -319,20 +313,14 @@ int Sramp(int up_down,float d, float v_CV,float linear_ratio,jetsontx2GPIO STEP 
 	float sarray[2000];
 
 	time_total=d/v_CV;
-        cout<<"total time = "<<time_total<<endl;	
-	curve_ratio=(1-linear_ratio)/4.0;
-	cout<<"curve ratio = "<<curve_ratio<<endl;
-
+ 	curve_ratio=(1-linear_ratio)/4.0;
+	
 	ta=2.0*curve_ratio*time_total;
 	a=2*v_CV/ta;
-	cout<<"acceleration = "<<a<<endl;
-	cout<<"ta = "<<ta<<endl;
 
 	seg_time=ta/2;
-	cout<<"seg_time = "<<seg_time<<endl;
 
 	time=seg_time/9;
-	cout<<"time = "<<time<<endl;
 	int s=0;
 	
 	while(time<ta){
@@ -356,7 +344,7 @@ int Sramp(int up_down,float d, float v_CV,float linear_ratio,jetsontx2GPIO STEP 
 		usleep(1000000*sarray[i]/2);
 		gpioSetValue(STEP,off);
 		usleep(1000000*sarray[i]/2);
-		cout<<"up "<<1000000*sarray[i]/2<<endl;
+		//cout<<"up "<<1000000*sarray[i]/2<<endl;
 	}
 	}
 	else{
@@ -365,7 +353,7 @@ int Sramp(int up_down,float d, float v_CV,float linear_ratio,jetsontx2GPIO STEP 
 		usleep(1000000*sarray[i]/2);
 		gpioSetValue(STEP,off);
 		usleep(1000000*sarray[i]/2);
-		cout<<"down "<<1000000*sarray[i]/2<<endl;
+		//cout<<"down "<<1000000*sarray[i]/2<<endl;
 	}
 	}
 	return s;
@@ -520,6 +508,7 @@ float step_total = step * d; //total counts to travel
 int up_down;
 int ramp_step, ramp2_step, linear_step;
 int pid_linear;
+float return_50;
 
 //-------YSramp parameters----------
 gpioSetValue(dirYL,off); //CW
@@ -543,10 +532,12 @@ int i2cfile = init_i2c(); //pass file descriptor
 const char * sizefifo = "/tmp/size"; //file locations
 const char * speedfifo = "/tmp/speed";
 const char * startfifo = "/tmp/start";
+const char * datafifo = "/tmp/data";
 	
 float CVspeed = 0; //initiate data
 bool CVsize = 0;
 bool CVstart = 0;
+bool CVdata = 0;
 
 int fdsize = open(sizefifo, O_RDONLY); //open fifo file
 cout<<"open fdsize"<<endl;
@@ -554,6 +545,7 @@ int fdspeed = open(speedfifo, O_RDONLY);
 cout<<"open fdspeed"<<endl;
 int fdstart = open(startfifo, O_RDONLY);
 cout<<"open fdstart"<<endl;
+int fddata = open(datafifo, O_RDONLY);
 
 //---------EE parameters---------
 struct endeffector td;
@@ -686,14 +678,15 @@ pthread_join(YL, NULL);
 
 //--------y motor----------------
 
-/* //latch breaks when there is not new data, then it will move on to read values
+//loop goes here
+
+for(int test=0;test<2;test++){ //insert off button
+//latch breaks when there is not new data, then it will move on to read values
 CVdata=0;
 while(CVdata==0){
 read(fddata, &CVdata, sizeof(CVdata));
 }
-*/
-for(int fifocount=0;fifocount<4;fifocount++){
-//{
+
 read(fdsize, &CVsize, sizeof(CVsize)); //CV velocity;
 cout<<"Size = "<<CVsize<<endl;
 read(fdspeed, &CVspeed, sizeof(CVspeed)); //CV velocity;
@@ -800,57 +793,73 @@ if (pre_size != CVsize){
 	
 else;//belongs to if(pre_size != CVsize){
 pre_size = CVsize;
-cout<<"previous size = " <<pre_size<<endl;
-
-}
 
 //loop read CV start here
-/* 
+
 CVstart=0;
 while(CVstart==0){
 read(fdstart, &CVstart, sizeof(CVstart));
 }
-*/  
+
 
 //--------X/EE motor and Solenoids------------
-/*
-gpioSetValue(disable_X_EE,on); // turn on motor
+
 
 gpioSetValue(dirX,off); //on is CW, off is CW looking at the motor
 gpioSetValue(dirEE,off); //on is CW, off is CW looking at the motor
 
-usleep(100);
-read(fdspeed, &CVspeed, sizeof(CVspeed)); //remove later
-cout<<"Speed = "<<CVspeed<<endl;
 
-read(fdsize, &CVsize, sizeof(CVsize));
-cout<<"Size = "<<CVsize<<endl;
 if(CVsize) td.spray = 2; //outter for larger wreath
 else td.spray = 1; //inner for small wreath
 
-td.time_total=d/CVspeed; //approximates total time to travel distance
-
+td.time_total=d/CVspeed; //approximates total time to travel distance for EE thread
 pthread_create(&tid, &attr, EEMotor, &td); //create EE thread
 
 up_down=1; // 1 = accelerate ; 0 = decelerate 
 ramp_step = Sramp(up_down, d, CVspeed, linear_ratio, stepX); 
 cout<<"ramp_step ="<<ramp_step<<endl;
 
-pid_linear = 1; // 1 = pid ; 0 = linear
+pid_linear = 0; // 1 = pid ; 0 = linear
 linear_step = linear_pid(pid_linear, CVspeed, ramp_step, step_total, i2cfile, stepX);
 
 up_down=0;
 ramp2_step = Sramp(up_down, d, CVspeed, linear_ratio, stepX); 
+cout<<"ramp_step ="<<ramp2_step<<endl;
 
 pthread_join(tid, NULL); //stop end effector
 
 
 int actual_step = ramp_step + linear_step + ramp2_step;//reference for actual distance traveled
 float actual_distance = actual_step/step;
-cout<<"actual steps = "<<actual_step<<endl;
-cout<<"actual distance = "<<actual_distance<<endl;
-*/
-//loop
+
+//reverse
+
+gpioSetValue(dirX,on); //on is CCW
+gpioSetValue(dirEE,on); //on is CCW
+
+return_50 = CVspeed*1.5; //move back 50% faster
+
+td.time_total = actual_distance/return_50; //approximates total time to travel distance for EE thread
+pthread_create(&tid, &attr, EEMotor, &td); //create EE thread
+
+up_down=1; // 1 = accelerate ; 0 = decelerate 
+int ramp_step_r = Sramp(up_down, actual_distance, return_50, linear_ratio, stepX); 
+cout<<"ramp_step ="<<ramp_step_r<<endl;
+
+
+pid_linear = 0; // 1 = pid ; 0 = linear
+int linear_step_r = linear_pid(pid_linear, return_50, ramp_step, actual_step, i2cfile, stepX);
+
+up_down=0;
+int ramp2_step_r = Sramp(up_down, actual_distance, return_50, linear_ratio, stepX); 
+cout<<"ramp_step ="<<ramp2_step_r<<endl;
+
+pthread_join(tid, NULL); //stop end effector
+
+int actual_step_r = ramp_step + linear_step + ramp2_step;//reference for actual distance traveled
+float actual_distance_r = actual_step/step;
+
+} //loop until off
 
 
 
