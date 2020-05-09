@@ -8,6 +8,7 @@ g++ -O2 -Wall pulsecount.cpp jetsontx2GPIO.c -pthread -o opulsecount
 
 g++ -O2 -Wall ymotors.cpp jetsontx2GPIO.c -pthread -o oymotors
 
+g++ -O2 -Wall halleffect.cpp jetsontx2GPIO.c -pthread -o ohalleffect
 
 ./ofifotest | sudo ./ofinal 
 

@@ -54,34 +54,38 @@ void MotorInit(jetsontx2GPIO _ENA, jetsontx2GPIO _STEP, jetsontx2GPIO _DIR) {
 										 }
 int main(){
 	signal(SIGINT, signalHandler);
-	jetsonTX2GPIONumber STEP = gpio396;
-	jetsonTX2GPIONumber DIR = gpio466;
+	jetsonTX2GPIONumber STEP = gpio389;
+	jetsonTX2GPIONumber DIR = gpio298;
 	jetsonTX2GPIONumber ENA = gpio397;
 	
 	MotorInit(ENA, STEP, DIR);
 
-	float d=0.5; //inches (linear)
+	float d=24; //inches (linear)
 	float v=0;
-	float v_CV=4.68; // in per second (linear)
+	//float v_CV=4.68; // inches per second (linear)(11.89cm/s)
+	float v_CV;
+	cout<<"v_CV"<<endl;
+	cin>>v_CV;
 	float delay,ta,a,time_total,curve_ratio,seg_time;
 	float time;
-	float linear_ratio=0.75;
-	float sarray[1000000];
+	float linear_ratio=0.5;
+	float sarray[10000];
 
-	time_total=(d*100)/v_CV;
+	time_total=(d)/v_CV;
+       	cout<<"total time ="<<time_total<<endl;	
 	curve_ratio=(1-linear_ratio)/4.0;
-	cout<<curve_ratio<<"\n"<<endl;
+	cout<<"cure ratio"<<curve_ratio<<"\n"<<endl;
 
 	ta=2.0*curve_ratio*time_total;
 	a=2*v_CV/ta;
-	cout<<a<<"\n"<<endl;
+	cout<<"acceleration"<<a<<"\n"<<endl;
 	cout<<"ta="<<ta<<"\n"<<endl;
 
 	seg_time=ta/2;
 	cout<<"seg_time="<<seg_time<<endl;
 
 	time=seg_time/9;
-
+	cout<<"time="<<time<<endl;
 	int s=0;
 	int counta=0, countb=0;
 
@@ -105,7 +109,7 @@ int main(){
 			sarray[s]=delay;
 			time=time+delay;
 			s++;
-		//	cout<<delay<<endl;
+			cout<<delay<<endl;
 		
 	}
 			
@@ -118,7 +122,7 @@ int main(){
 		usleep(1000000*sarray[i]/2);
 		gpioSetValue(STEP,off);
 		usleep(1000000*sarray[i]/2);
-		cout<<1000000*sarray[i]/2<<endl;
+		cout<<"up "<<1000000*sarray[i]/2<<endl;
 	}
 	
 	while(time<linear_time){
@@ -127,15 +131,15 @@ int main(){
 	        gpioSetValue(STEP,off);
 	        usleep(1000000*linear_delay/2);
 		time=time+linear_delay;
-		cout<<1000000*linear_delay/2<<endl;
+		cout<<"linear "<<1000000*linear_delay/2<<endl;
 	}
 
-	for(int i=s;i>0;i--){
+	for(int i=s-1;i>0;i--){
 		gpioSetValue(STEP,on);
 		usleep(1000000*sarray[i]/2);
 		gpioSetValue(STEP,off);
 		usleep(1000000*sarray[i]/2);
-		cout<<1000000*sarray[i]/2<<endl;
+		cout<<"down "<<1000000*sarray[i]/2<<endl;
 	}
 
 

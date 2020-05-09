@@ -15,107 +15,210 @@
 #include "jetsontx2GPIO.h"
 using namespace std;
 
-
+/*CV will give us a size and velocity at the same time before it reaches gantry
+ *therefore, y first then EE and X at the same time 
+ */
 //used to pass arguments into the background thread
 struct thread_data {
-        jetsontx2GPIO STEPS;
-        jetsontx2GPIO DIRX;
+        jetsontx2GPIO STEP;
+        jetsontx2GPIO DIRECTION;
 	float velocity;
-	float stepdata;
-	float initial;
-	float final;
+	float distance;//inches  
+	float linear_ratio;//how long linear compared to Sramp
 };
 
+/*thread the EE motor, x motor and y motor can be from the Sramp function
+ * EE will include solenoid driver operation 
+ * Sramp - accelerate and decelerate and linear ( no pid )
+ * XPID only part of main, because fifo needs to be called in main
+ * Y counts encoder pulses to determine position
+ * 	should return steps in array for comparing with encoder
+ * 	thread to move y motors, main to read encoder
+ * 	compare encoder value to steps taken in y thread
+ * 	can loop it from run thread> count encoder> join thread> compare> run again until equal
+ * 	need to fill array up to meet position
+ * 		do normal sramp and fill up the rest with linear
+ * 		how switch from small to large
+ * 			only ramps? make it fixed transistion		
+ * 
+ * interrupts will do what? kernel space talk to userspace
+ * 	what will it do in kernel? 
+ * 	where will it resume when it finishes kernel thing
+ * 	i could sample between steps for limits in linear
+ * 		will never interrupt during ramp up unless super slow
+ *	
+ *	
+ * how much clearance for deceleration ramp? 	
+ *	units: cm 
+ *	so we can measure for the comparator Vref
+ * 
+*/
 //background thread function that runs horizontal motors
-void *moveXMotor(void* threadarg) {
+void *moveMotor(void* threadarg) {
 	struct thread_data* my_data;
         my_data = (struct thread_data*) threadarg;
 
         //initialize function variables with data from the structure
         
-        jetsontx2GPIO _STEP = my_data->STEPS;
-	
-	
-	
-	float d=0.5,v=0,v_CV=10,delay,time=0,ta=0,a=0,linear_length,time_total,curve_ratio,linear_ratio=0.75;
- 	float sarray[1000000];
-	
-	time_total=d*100/v_CV;
-	curve_ratio=(1-linear_ratio)/4;
-	ta=2*curve_ratio*time_total;
-	
-	int s=0;
-	
-	while(time<ta){
-		if(time<=ta/2)
-			v=a*a/(2*v_CV)*time*time;
-		else if(time>(ta/2)&&time<=ta)
-			v=a*a/(2*v_CV)*(ta-time)*(ta-time);
-		
-		delay=0.00403/v;
-		sarray[s]=delay;
-		time=time+delay;
-		cout<<sarray[s]<<endl;
-		s++;	
-	}
-	size_t n = sizeof(sarray);
-	cout<<"size of array="<<n<<endl;
+        jetsontx2GPIO STEP = my_data->STEP;
+	jetsontx2GPIO DIRECTION = my_data->DIRECTION;
+	float v_CV = my_data->velocity;//inches per second
+	float d = my_data->distance;//inches
+	float linear_ratio=my_data->linear_ratio;
 
-	for(int i=0;i<n;i++){
-		gpioSetValue(_STEP,on);
-		usleep(sarray[i]/2);
-		gpioSetValue(_STEP,off);
-		usleep(sarray[i]/2);
-	}
+        float v=0;
+        float delay,ta,a,time_total,curve_ratio,seg_time;
+        float time;
+        float sarray[2000];
 
-        pthread_exit(NULL);
-}
+        time_total=(d)/v_CV;
+        curve_ratio=(1-linear_ratio)/4.0;
+        cout<<curve_ratio<<"\n"<<endl;
 
-//function to run end effector. Runs on main thread. **** ADD SPRAY CODE HERE ****
-void moveEEMotor(jetsontx2GPIO _STEP120, jetsontx2GPIO _ENA120, float IS_EE, float FS_EE) {
+        ta=2.0*curve_ratio*time_total;
+        a=2*v_CV/ta;
+        cout<<a<<"\n"<<endl;
+        cout<<"ta="<<ta<<"\n"<<endl;
 
-        gpioSetValue(_ENA120, on);
+        seg_time=ta/2;
+        cout<<"seg_time="<<seg_time<<endl;
 
-        const int stepEE = 285;
+        time=seg_time/9;
 
-        float c0 = IS_EE;
-        float highSpeed = FS_EE;
-        float lastDelay = 0;
+        int s=0;
+        int counta=0, countb=0;
 
-        int delays[stepEE];
+        while(time<ta)
+        {
+                if(time<=seg_time){
+                        v=a*a/(2*v_CV)*(time*time);
+                        //cout<<v<<endl;
+                        //cout<<va="<<v<<endl;
+                        counta=counta+1;
+                }
+                else if(time>seg_time&&time<=ta){
+                        v=v_CV-a*a/(2*v_CV)*(ta-time)*(ta-time);
+                        //cout<<v<<endl;
+                        //cout<<"vb="<<v<<endl;
+                        countb=countb+1;
+                }
 
-        for (int i = 0; i < stepEE; i++) {                              //calculates time delays for speed ramping
-                float d = c0;
-                if (i > 0)
-                        d = lastDelay - (2 * lastDelay) / (4 * i + 1);
-                if (d < highSpeed)
-                        d = highSpeed;
-                delays[i] = d;
-                lastDelay = d;
+		 	delay=0.00403/v;
+                        sarray[s]=delay;
+                        time=time+delay;
+                        s++;
+                	cout<<delay<<endl;
 
         }
 
-        // use delays from the array, forward
-        for (int i = 0; i < stepEE; i++) {
-                gpioSetValue(_STEP120, on);
-                usleep(delays[i]/2);
-                gpioSetValue(_STEP120, off);
-                usleep(delays[i]/2);
-		cout<<delays[i]<<endl;
+        float linear_delay=0.00403/v_CV;
+        time=0;
+        float linear_time = linear_ratio*time_total;
+        cout<<s<<endl;
+        for(int i=0;i<s;i++){
+                gpioSetValue(STEP,on);
+                usleep(1000000*sarray[i]/2);
+                gpioSetValue(STEP,off);
+                usleep(1000000*sarray[i]/2);
+                cout<<"up "<<1000000*sarray[i]/2<<endl;
         }
 
-        // use delays from the array, backward
-        for (int i = 0; i < stepEE; i++) {
-                gpioSetValue(_STEP120, on);
-                usleep(delays[stepEE - i - 1/2]);
-                gpioSetValue(_STEP120, off);
-                usleep(delays[stepEE - i - 1/2]);
-		cout<<delays[i]<<endl;
+        while(time<linear_time){
+                gpioSetValue(STEP,on);
+                usleep(1000000*linear_delay/2);
+                gpioSetValue(STEP,off);
+                usleep(1000000*linear_delay/2);
+                time=time+linear_delay;
+                cout<<"linear "<<1000000*linear_delay/2<<endl;
+        }
+
+        for(int i=s-1;i>0;i--){
+                gpioSetValue(STEP,on);
+                usleep(1000000*sarray[i]/2);
+                gpioSetValue(STEP,off);
+                usleep(1000000*sarray[i]/2);
+                cout<<"down "<<1000000*sarray[i]/2<<endl;
+        }
+
+	pthread_exit(NULL);
 }
 
-        gpioSetValue(_ENA120, off);
+//use to ramp all motors
+int Sramp(bool up_down, float v_CV, float d, float linear_ratio,jetsontx2GPIO STEP, jetsontx2GPIO DIRECTION) {
+     
+        
+        float v=0;
+        float delay,ta,a,time_total,curve_ratio,seg_time;
+        float time;
+        float sarray[2000];
 
+        time_total = d/v_CV;
+        curve_ratio=(1-linear_ratio)/4.0;
+        cout<<curve_ratio<<"\n"<<endl;
+
+        ta=2.0*curve_ratio*time_total;
+        a=2*v_CV/ta;
+        cout<<a<<"\n"<<endl;
+        cout<<"ta="<<ta<<"\n"<<endl;
+
+        seg_time=ta/2;
+        cout<<"seg_time="<<seg_time<<endl;
+
+        time=seg_time/9;
+
+        int s=0;
+        int counta=0, countb=0;
+
+        while(time<ta)
+        {
+                if(time<=seg_time){
+                        v=a*a/(2*v_CV)*(time*time);
+                        //cout<<v<<endl;
+                        //cout<<va="<<v<<endl;
+                        counta=counta+1;
+                }
+
+
+ 		else if(time>seg_time&&time<=ta){
+                        v=v_CV-a*a/(2*v_CV)*(ta-time)*(ta-time);
+                        //cout<<v<<endl;
+                        //cout<<"vb="<<v<<endl;
+                        countb=countb+1;
+                }
+
+                        delay=0.00403/v;
+                        sarray[s]=delay;
+                        time=time+delay;
+                        s++;
+                        cout<<delay<<endl;
+
+        }
+
+       	if(up_down){// ramp up is 1, ramp down is 0
+
+        for(int i=0;i<s;i++){
+                gpioSetValue(STEP,on);
+                usleep(1000000*sarray[i]/2);
+                gpioSetValue(STEP,off);
+                usleep(1000000*sarray[i]/2);
+                cout<<"up "<<1000000*sarray[i]/2<<endl;
+        }
+
+	else{
+        for(int i=s-1;i>0;i--){
+                gpioSetValue(STEP,on);
+                usleep(1000000*sarray[i]/2);
+                gpioSetValue(STEP,off);
+                usleep(1000000*sarray[i]/2);
+                cout<<"down "<<1000000*sarray[i]/2<<endl;
+        }
+	}
+        
 }
+return s-1;
+}
+
+
 
 void MotorInit(jetsontx2GPIO _ENA, jetsontx2GPIO _STEP, jetsontx2GPIO _DIR) {
 
@@ -127,7 +230,6 @@ void MotorInit(jetsontx2GPIO _ENA, jetsontx2GPIO _STEP, jetsontx2GPIO _DIR) {
         gpioSetDirection(_ENA, outputPin);
         gpioSetDirection(_DIR, outputPin);
         gpioSetDirection(_STEP, outputPin);
-        gpioSetValue(_ENA, high);
 
 }
 
@@ -156,14 +258,16 @@ void signalHandler(int signum) {
         gpioUnexport(ena120);     // unexport the ENA
         gpioUnexport(dir120);      // unexport the DIR
         gpioUnexport(step120);      // unexport the STEP
-        exit(signum);
+        
+	exit(signum);
 }
 
 
 int main(int argc, char *argv[]){
 
         // register signal SIGINT and signal handler
-        signal(SIGINT, signalHandler);
+        signal(SIGINT, signalHandler);//put unlink fifos in here
+
 
         //for FIFO
         float CVspeed=0;
@@ -173,13 +277,6 @@ int main(int argc, char *argv[]){
         const char *sizefifo="/tmp/size";
         const char *startfifo="/tmp/start";
 
-        int steps_x=1250;
-        float IS_x=700;
-        float FS_x = 700;
-
-        int steps_EE = 285;
-        float IS_EE = 30000;
-        float FS_EE = 3000;
 
         //allows access to the stucture in main
         struct thread_data td;
@@ -187,75 +284,81 @@ int main(int argc, char *argv[]){
 
         //thread ID
         pthread_t tid;
-
         // Create attributes
         pthread_attr_t attr;
         pthread_attr_init(&attr);
 
+	
+	//initialize gpio pins
         jetsonTX2GPIONumber ENA = gpio396 ;     // Output - xaxis motor
-        jetsonTX2GPIONumber STEP = gpio392 ; // Output
-        jetsonTX2GPIONumber DIR = gpio255; // Output
+        
+	jetsonTX2GPIONumber STEP = gpio392 ; // Output
+        jetsonTX2GPIONumber DIRX = gpio255; // Output
         jetsonTX2GPIONumber ENA120 = gpio398;     // Output - EE motors
         jetsonTX2GPIONumber STEP120 = gpio298; // Output
         jetsonTX2GPIONumber DIR120 = gpio389; // Output
 
-        MotorInit(ENA, STEP, DIR);
+	//iniate fifo and motor
+        MotorInit(ENA, STEP, DIRX);//put mkfifo in here
         MotorInit(ENA120, STEP120, DIR120);
 
-        td.STEPS = STEP;
-        td.stepdata = steps_x;
-        td.initial = IS_x;
-        td.final = FS_x;
-
+        td.STEP = STEP;
+        td.DIRECTION=DIRX;
+	td.distance=24;
+	td.linear_ratio=0.75;
+	
 
         int fdsize = open(sizefifo, O_RDONLY);
+        int fdspeed = open(speedfifo, O_RDONLY);
+	int fdstart = open(startfifo, O_RDONLY);
+	
+
         read(fdsize, &CVsize, sizeof(CVsize));
         if(CVsize!=0){
         cout<<"Received:"<<CVsize<<endl;}
         else
         cout<<"none"<<endl;
-        close(fdsize);
+        
 
-        int fdspeed = open(speedfifo, O_RDONLY);
         read(fdspeed, &CVspeed, sizeof(CVspeed));
         if(CVspeed!=0){
         cout<<"Received:"<<CVspeed<<endl;}
         else
         cout<<"none"<<endl;
-        close(fdspeed);
+        
 
-        int fdstart = open(startfifo, O_RDONLY);
         read(fdstart, &CVstart, sizeof(CVstart));
         if(CVstart!=0){
         cout<<"Received:"<<CVstart<<endl;}
         else
         cout<<"none"<<endl;
-        close(fdstart);
 
+	td.velocity=CVspeed;
 
-
-                        gpioSetValue(DIR, high);
+                        gpioSetValue(DIRX, high);
                         gpioSetValue(DIR120, high);
 
                         //creates thread to run x-axis motor in one direction
-                        //pthread_create(&tid, &attr, moveXMotor, &td);
+                        pthread_create(&tid, &attr, moveMotor, &td);
 
-                        //  run EE motor
-                        moveEEMotor(STEP120, ENA120, 40000, 4000);
-
+ 
                         //waits until background thread is terminated
-                        //pthread_join(tid, NULL);
+                        pthread_join(tid, NULL);
 
-                        gpioSetValue(DIR, low);
+                        gpioSetValue(DIRX, low);
                         gpioSetValue(DIR120, low);
 
                         //creates thread to run x-axis motor in the other direction
-                        //pthread_create(&tid, &attr, moveXMotor, &td);
+                        //pthread_create(&tid, &attr, moveMotor, &td);
 
                         //run EE motor again
-                        moveEEMotor(STEP120, ENA120, 40000, 2000);
+                        //moveEEMotor(STEP120, ENA120, 40000, 2000);
 
-                        pthread_join(tid, NULL);
+                        //pthread_join(tid, NULL);
+
+	close(fdsize);
+	close(fdspeed);
+	close(fdstart);
 
     return 0;
 }

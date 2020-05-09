@@ -1,3 +1,3 @@
 #!/bin/bash
-cd /home/ponderosa/justin
-sudo ./vtest
+cd /home/ponderosa/justin/jetson
+sudo ./Sramp

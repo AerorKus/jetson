@@ -1,3 +1,24 @@
+/*
+
+//-----------how to run the program------------------
+need sudo permission to operate gpio and i2c pins (./ofifotest | sudo ./ofinal ) 
+must be ran with fifotest.cpp file: program takes inputs of fifo to run
+
+//------------things to do when built-------------
+PID needs to be tuned
+hall effect voltages need to be tuned to see what voltage value determines that the home position i reached
+
+//----------------todo---------------------
+measure the height of wreath : put in initiation
+measure difference between wreaths : how far to switch between
+change distance traveled for x axis : 3s around 4.68 in/s
+add return
+
+//----------troubleshooting----------------
+reasons to stall: fifo no value, adc not connected
+gpio pin 466 doesnt work on this jetson
+
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,10 +45,10 @@ using namespace std;
 
 
 struct endeffector { 
-        jetsontx2GPIO STEP;
+    jetsontx2GPIO STEP;
 	jetsontx2GPIO solenoidIn;
 	jetsontx2GPIO solenoidOut;
-        float time_total;
+    float time_total;
 	int spray; //0 dont spray, 1 inner, 2 outter	
 };
 
@@ -38,9 +59,65 @@ struct encoder{
 };
 
 struct calc_Sramp_data {
-        float delay_array[2000];
-        int step;
+    float delay_array[2000];
+    int step;
 };
+
+struct i2c_struct {
+	float HE_X;
+	float HE_EE1; //home
+	float HE_EE2; //if wrong way
+	float FV;
+	int enable;
+	jetsontx2GPIO step_X;
+	jetsontx2GPIO dir_X;
+	jetsontx2GPIO step_EE;
+	jetsontx2GPIO dir_EE;
+};
+
+
+void *EEhome(void* threadarg){ 
+	struct i2c_struct* voltage_data = (struct i2c_struct*) threadarg;
+			
+	jetsontx2GPIO STEP = voltage_data->step_EE;
+	jetsontx2GPIO DIR = voltage_data->dir_EE;
+	float linear_velocity = 1; //1 inch per second
+	float linear_delay=0.005625/linear_velocity;
+
+	gpioSetValue(DIR,on);
+	while(voltage_data->HE_EE1<4){ //tune this value: assuming 4V when hall effects detects metal 
+		
+		if(voltage_data->HE_EE2>=4){ //if other hall effects gets triggered move the other way (were going in the wrong direction)
+			gpioSetValue(DIR,off); 	//move CW
+		}	
+	
+		gpioSetValue(STEP,on);
+        usleep(1000000*linear_delay/2);
+    	gpioSetValue(STEP,off);
+        usleep(1000000*linear_delay/2); 
+	}	
+	
+pthread_exit(NULL);	
+}
+
+void *Xhome(void* threadarg){ 
+	struct i2c_struct* voltage_data = (struct i2c_struct*) threadarg;
+	
+	jetsontx2GPIO STEP = voltage_data->step_X;
+	jetsontx2GPIO DIR = voltage_data->dir_X;
+	float linear_velocity = 1; //1 inch per second
+	float linear_delay=0.005625/linear_velocity;
+	gpioSetValue(DIR,on); 
+	while(voltage_data->HE_X<4){ //tune this value: assuming 4V when hall effects detects metal 
+	cout<<"voltage of hall effect read in Xhome "<<voltage_data->HE_X<<endl;
+		gpioSetValue(STEP,on);
+        usleep(1000000*linear_delay/2);
+    	gpioSetValue(STEP,off);
+        usleep(1000000*linear_delay/2);
+	}	
+pthread_exit(NULL);	
+}
+
 
 void *EEMotor(void* threadarg){ 
 	struct endeffector* my_data = (struct endeffector*) threadarg;
@@ -50,7 +127,7 @@ void *EEMotor(void* threadarg){
 	jetsontx2GPIO solenoidOut = my_data->solenoidOut;
 	float time_total = my_data->time_total;
 	int spray = my_data->spray;
-        if(spray==0){
+    if(spray==0){
 		gpioSetValue(solenoidIn,off);
 		gpioSetValue(solenoidOut,off);
 	}
@@ -64,41 +141,40 @@ void *EEMotor(void* threadarg){
 	}
 	else;
 
-
-
 	float step_total = 534; // 1600/3 = 534 cnts for a 120 degree turn
 	float d = 2*3.14159/3; //in radians (2*pi/3)
 	
 	float linear_velocity = d/time_total; //rad per second
-        float linear_delay=0.003927/linear_velocity; // 2*pi/1600 conversion from radians to count
+    float linear_delay=0.003927/linear_velocity; // 2*pi/1600 conversion from radians to count
 	
 	int current_step=0;
         while(current_step<step_total){
-                gpioSetValue(STEP,on);
-                usleep(1000000*linear_delay/2);
-                gpioSetValue(STEP,off);
-                usleep(1000000*linear_delay/2);
-	        //cout<<"linear "<<1000000*linear_delay/2<<endl;
-		current_step++;
-	}       
+            gpioSetValue(STEP,on);
+            usleep(1000000*linear_delay/2);
+            gpioSetValue(STEP,off);
+            usleep(1000000*linear_delay/2);
+		    //cout<<"linear "<<1000000*linear_delay/2<<endl;
+			current_step++;
+		}       
         
   	//stops spraying when end effector reaches the end	
-       	gpioSetValue(solenoidIn,off);       
+   	gpioSetValue(solenoidIn,off);       
 	gpioSetValue(solenoidOut,off);
 
-pthread_exit(NULL);	
+pthread_exit(NULL);
 }	
 
 
 void *encoder(void* threadarg){
 	struct encoder* my_data = (struct encoder*) threadarg;
-
+	
 	jetsontx2GPIO encoder = my_data->GPIO;
 	int counter=0;
 	int enable=1;
 	unsigned int value= 0;
 
 	while(enable){
+
 	enable = my_data->enable;
 	while(value==0){
         	gpioGetValue(encoder, &value);
@@ -108,6 +184,7 @@ void *encoder(void* threadarg){
 	if(my_data->enable==1)
 	counter++;
 	my_data->counter=counter;
+	//cout<<"count = "<<my_data->counter<<endl;
 	while(value==1){
 	        gpioGetValue(encoder,&value);
 		if(my_data->enable==0) break;
@@ -146,32 +223,32 @@ jetsontx2GPIO extra
 
         cout << "exporting pins" << endl;
 
-        // Make the button and led available in user space
+    // Make the button and led available in user space
 	gpioExport(encoderL);
-        gpioExport(dirYL);
-        gpioExport(stepYL);
-        gpioExport(encoderR);
-        gpioExport(dirYR);
-        gpioExport(stepYR);
-        gpioExport(dirEE);
-        gpioExport(stepEE);
-        gpioExport(dirX);
-        gpioExport(stepX);
-        gpioExport(solenoidOut);
-        gpioExport(solenoidIn);
-        gpioExport(flow);
-        gpioExport(level);
-        gpioExport(maintence);
-        gpioExport(start_stop);
-        gpioExport(OFF);
-        gpioExport(emerg_stop);
-        gpioExport(disable_Y);
-        gpioExport(disable_X_EE);
-        gpioExport(extra);
-	
+    gpioExport(dirYL);
+    gpioExport(stepYL);
+    gpioExport(encoderR);
+    gpioExport(dirYR);
+    gpioExport(stepYR);
+    gpioExport(dirEE);
+    gpioExport(stepEE);
+    gpioExport(dirX);
+    gpioExport(stepX);
+    gpioExport(solenoidOut);
+    gpioExport(solenoidIn);
+    gpioExport(flow);
+    gpioExport(level);
+    gpioExport(maintence);
+    gpioExport(start_stop);
+    gpioExport(OFF);
+    gpioExport(emerg_stop);
+    gpioExport(disable_Y);
+    gpioExport(disable_X_EE);
+    gpioExport(extra);
+
 	//set to input or output
-        gpioSetDirection(encoderL, inputPin);
-        gpioSetDirection(dirYL, outputPin);
+    gpioSetDirection(encoderL, inputPin);
+    gpioSetDirection(dirYL, outputPin);
 	gpioSetDirection(stepYL, outputPin);
 	gpioSetDirection(encoderR, inputPin);
 	gpioSetDirection(dirYR, outputPin);
@@ -199,8 +276,8 @@ jetsontx2GPIO extra
 void signalHandler(int signum) {
         cout << "Disabling motors\n";
 
-        // cleanup and close up stuff here
-        // terminate program
+    // cleanup and close up stuff here
+    // terminate program
 	//left side
 	jetsonTX2GPIONumber encoderL = gpio396; //encoder left y motor
 	jetsonTX2GPIONumber dirYL = gpio466; // dir left y motor
@@ -236,7 +313,7 @@ void signalHandler(int signum) {
         gpioSetValue(stepX, high);
        	gpioSetValue(solenoidOut, low);
         gpioSetValue(solenoidIn, low); 
-	gpioSetValue(disable_Y, low);
+		gpioSetValue(disable_Y, low);
         gpioSetValue(disable_X_EE, low);
         gpioSetValue(extra, low);
 
@@ -248,16 +325,16 @@ void signalHandler(int signum) {
         gpioUnexport(dirYR);   
         gpioUnexport(stepYR); 
         gpioUnexport(dirEE);     
-	gpioUnexport(stepEE); 
-	gpioUnexport(dirX);
+		gpioUnexport(stepEE); 
+		gpioUnexport(dirX);
         gpioUnexport(stepX);
-	gpioUnexport(solenoidOut);
+		gpioUnexport(solenoidOut);
         gpioUnexport(solenoidIn);
-	gpioUnexport(flow);	
+		gpioUnexport(flow);	
        	gpioUnexport(level);	
        	gpioUnexport(maintence);	
        	gpioUnexport(start_stop);	
-	gpioUnexport(OFF);	
+		gpioUnexport(OFF);	
        	gpioUnexport(emerg_stop);	
        	gpioUnexport(disable_Y);	
        	gpioUnexport(disable_X_EE);	
@@ -266,42 +343,247 @@ void signalHandler(int signum) {
         exit(signum);
 }
 
+
+void *i2c_file(void* threadarg){ //A0(datasheet) is A3(on silkscreen) ; A1 = A0 ; A2 = A1 ; A3 = A2
+
+	struct i2c_struct* my_data = (struct i2c_struct*) threadarg;
+	int file;
+	int I2CAddress=0x48;
+    const char *filename = "/dev/i2c-1";
+	uint8_t config[3];
+	uint8_t address[1];
+	uint8_t read_buf[2];
+
+	float VPS=6.144/2048;	
+	int16_t val;
+
+	
+	if ((file = open(filename, O_RDWR)) < 0) {
+		/* ERROR HANDLING: you can check errno to see what went wrong */
+		perror("Failed to open the i2c bus");
+		exit(1);
+	}
+
+	if(ioctl(file,I2C_SLAVE,I2CAddress)<0){
+		/* ERROR HANDLING; you can check errno to see what went wrong */
+		perror("Failed to connect");
+		exit(1);
+	}	
+	usleep(500);
+
+	while(my_data->enable){
+
+	//read A0
+	config[0]=0x01;//points to config register
+	config[1]=0xD0;//MSB config register 1101 0000 FSR=6.144, AIN1 to GND
+	config[2]=0x83;//LSB config register
+	address[0]=0x00;//points to conversion register
+
+	write(file, config,3);
+	write(file, address,1);
+	read(file,read_buf,2);
+
+	val = read_buf[0] <<4 | read_buf[1]>>4;
+    my_data->HE_X = val*VPS;//steps x volts per steps = volts
+	//cout<<"voltage A0 = "<<my_data->HE_X<<endl;	//A0
+	
+	usleep(500);//makes it more realiable
+
+	//read A1
+	config[0]=0x01;//points to config register
+	config[1]=0xE0;//MSB config register 1110 0000 FSR=6.144, AIN2 to GND
+	config[2]=0x83;//LSB config register
+	address[0]=0x00;//points to conversion register
+	
+	write(file, config,3);
+	write(file, address,1);
+	read(file,read_buf,2);
+
+	val = read_buf[0] <<4 | read_buf[1]>>4;
+    my_data->HE_EE1 = val*VPS;//steps x volts per steps = volts
+	//cout<<"voltage A1 = "<<my_data->HE_EE1<<endl;	//A1	
+	
+	usleep(500);//makes it more realiable
+
+	//read A2
+	config[0]=0x01;//points to config register
+	config[1]=0xF0;//MSB config register 1111 0000 FSR=6.144, AIN3 to GND
+	config[2]=0x83;//LSB config register
+	address[0]=0x00;//points to conversion register
+	
+	write(file, config,3);
+	write(file, address,1);
+	read(file,read_buf,2);
+
+	val = read_buf[0] <<4 | read_buf[1]>>4;
+    my_data->HE_EE2 = val*VPS;//steps x volts per steps = volts
+	//cout<<"voltage A2 = "<<my_data->HE_EE2<<endl; //A2	
+	usleep(500);//makes it more realiable
+	
+	//read A3
+	config[0]=0x01;//points to config register
+	config[1]=0xC0;//MSB config register 1100 0000 FSR=6.144, AIN0 to GND
+	config[2]=0x83;//LSB config register 1000 0011
+	address[0]=0x00;//points to conversion register
+	
+	write(file, config,3);
+	write(file, address,1);
+	read(file,read_buf,2);
+
+	val = read_buf[0] <<4 | read_buf[1]>>4;
+    my_data->FV = val*VPS;//steps x volts per steps = volts
+	//cout<<"voltage A3 = "<<my_data->FV<<endl;	//A3
+	
+	usleep(500);//makes it more realiable
+
+	}
+close(file);
+pthread_exit(NULL);
+}
+
 //used for calculations return in main function
-struct calc_Sramp_data Sramp_function(float d, float v_CV,float linear_ratio){
+void Y_initiate (int up_down, int CVsize, float linear_ratio, struct encoder EDL, struct encoder EDR, jetsontx2GPIO stepYL, jetsontx2GPIO stepYR, jetsontx2GPIO dirYL, jetsontx2GPIO dirYR){
 
-        struct calc_Sramp_data x;
+float v,delay,ta,a,time_total,curve_ratio,seg_time,time;
+int current_step,linear_step_y,step_total_y;
+float sarray[2000];
 
-        float v=0;
-        float delay,ta,a,time_total,curve_ratio,seg_time;
-        float time;
+int step = 0;
+float v_CV = 3;
+float large = 5;// move up 5 inches
+float small = large + 3; //diameter of large : 28 ; small : 22 ; (28-22)/2
+float linear_delay_y = 0.005625/v_CV;
 
-        time_total=d/v_CV;
-        curve_ratio=(1-linear_ratio)/4.0;
-     
-        ta=2.0*curve_ratio*time_total;
-        a=2*v_CV/ta;
 
-        seg_time=ta/2;
 
-        time=seg_time/9;
-	   int s=0;
+if(CVsize){
+	step_total_y = 1600*large/9;
+	time_total=large/v_CV;
+}
+else{
+	step_total_y = 1600*small/9;
+	time_total=small/v_CV;
+}
 
-        while(time<ta){
-                if(time<=seg_time){
-                        v=a*a/(2*v_CV)*(time*time);
-                        }
-                else if(time>seg_time&&time<=ta){
-                        v=v_CV-a*a/(2*v_CV)*(ta-time)*(ta-time);
-                        }
+curve_ratio=(1-linear_ratio)/4.0;
+ta=2.0*curve_ratio*time_total;
+a=2*v_CV/ta;
+seg_time=ta/2;
+time=seg_time/9;
 
-                        delay=0.005625/v;
-                        x.delay_array[s]=delay;
-                        time=time+delay;
-                        s++;
+if(up_down){ //up = 1, down = 0
+	gpioSetValue(dirYL,on); //CW
+	gpioSetValue(dirYR,off); //CCW
+}
+else{
+    gpioSetValue(dirYL,off); //CCW
+    gpioSetValue(dirYR,on); //CW
+}
+
+while(time<ta){
+        if(time<=seg_time){
+                v=a*a/(2*v_CV)*(time*time);
                 }
-        x.step=s;
+        else if(time>seg_time&&time<=ta){
+                v=v_CV-a*a/(2*v_CV)*(ta-time)*(ta-time);
+                }
+                delay=0.005625/v;
+                sarray[step]=delay;
+                time=time+delay;
+                step++;
+        }
+linear_step_y = step_total_y - 2*step;
+//accelerate y motors
+current_step=0;
+while(current_step<step){ //correct place wrong time
+	cout<<"EDL = "<<EDL.counter<<endl;
+	cout<<"EDR = "<<EDR.counter<<endl;
+        if(EDL.counter == EDR.counter){
+                gpioSetValue(stepYL,on);
+                gpioSetValue(stepYR,on);
+                usleep(1000000*sarray[current_step]/2);
+                gpioSetValue(stepYL,off);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*sarray[current_step]/2);
+                current_step++;
+        }
+        else if(EDL.counter > EDR.counter){
+                gpioSetValue(stepYR,on);
+                usleep(1000000*sarray[current_step]/2);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*sarray[current_step]/2);
+        }
+        else if(EDL.counter < EDR.counter){
+                gpioSetValue(stepYL,on);
+                usleep(1000000*sarray[current_step]/2);
+                gpioSetValue(stepYL,off);
+                usleep(1000000*sarray[current_step]/2);
+        }
+        else;
 
-return x;
+}
+
+//linear y motors
+current_step=0;
+
+while(current_step<linear_step_y){
+		cout<<"EDL = "<<EDL.counter<<endl;
+		cout<<"EDR = "<<EDR.counter<<endl;
+        if(EDL.counter == EDR.counter){
+                gpioSetValue(stepYL,on);
+                gpioSetValue(stepYR,on);
+                usleep(1000000*linear_delay_y/2);
+                gpioSetValue(stepYL,off);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*linear_delay_y/2);
+                current_step++;
+        }
+        else if(EDL.counter > EDR.counter){
+                gpioSetValue(stepYR,on);
+                usleep(1000000*linear_delay_y/2);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*linear_delay_y/2);
+        }
+        else if(EDL.counter < EDR.counter){
+                gpioSetValue(stepYL,on);
+                usleep(1000000*linear_delay_y/2);
+                gpioSetValue(stepYL,off);
+                usleep(1000000*linear_delay_y/2);
+        }
+        else;
+
+}
+
+//deceleration
+current_step=0;
+while(current_step<step){ //correct place wrong time
+		cout<<"EDL = "<<EDL.counter<<endl;
+		cout<<"EDR = "<<EDR.counter<<endl;
+        if(EDL.counter == EDR.counter){
+                gpioSetValue(stepYL,on);
+                gpioSetValue(stepYR,on);
+                usleep(1000000*sarray[step-1-current_step]/2);
+                gpioSetValue(stepYL,off);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*sarray[step-1-current_step]/2);
+                current_step++;
+        }
+        else if(EDL.counter > EDR.counter){
+                gpioSetValue(stepYR,on);
+                usleep(1000000*sarray[step-1-current_step]/2);
+                gpioSetValue(stepYR,off);
+                usleep(1000000*sarray[step-1-current_step]/2);
+        }
+        else if(EDL.counter < EDR.counter){
+                gpioSetValue(stepYL,on);
+                usleep(1000000*sarray[step-1-current_step]/2);
+                gpioSetValue(stepYL,off);
+                usleep(1000000*sarray[step-1-current_step]/2);
+        }
+        else;
+
+}
+
 }
 
 //used for to move motors
@@ -359,17 +641,13 @@ int Sramp(int up_down,float d, float v_CV,float linear_ratio,jetsontx2GPIO STEP 
 	return s;
 }
 
-int linear_pid(int pid_linear, double CVspeed, int ramp_step, int step_total, int i2cfile, jetsontx2GPIO STEP){
+int linear_pid(int pid_linear, double CVspeed, int ramp_step, int step_total, jetsontx2GPIO STEP,struct i2c_struct){
 	//-------i2c---------
-	float data; //volts
-	float VPS = 6.144 / 2048; //FSR per 2^11 (11 bits, 12th bit is polarity +/-)
 	float vPV = 2 / 1.2; //velocity per volt MUST CHANGE LATER
-	int16_t val; //voltage in binary
-	uint8_t read_buf[2]; //returned values
 	
 	//--------closed loop-------
+    struct i2c_struct x;
 	int current_step=0;
-	float avg_voltage=0;
 	double setpoint = CVspeed;
 	double linear_velocity=CVspeed;
 	double linear_delay;
@@ -377,20 +655,14 @@ int linear_pid(int pid_linear, double CVspeed, int ramp_step, int step_total, in
 	int linear_step = step_total - 2*ramp_step; //how many steps to reach desired distance
 	
 	//--------pid parameters---------
-        PID xpid(0.00001,100,-100,1,0.01,4);// dt, max, min, Kp, Kd, Ki
-                                            // min/max saturates overshoot
+    PID xpid(0.00001,100,-100,1,0.01,4);// dt, max, min, Kp, Kd, Ki
+    
+	                                        // min/max saturates overshoot
 	//--------pid----------
 	if(pid_linear){
 	while(current_step<=linear_step){
-	        for(int DSP=0;DSP<5;DSP++){
-        	        read(i2cfile,read_buf,2);
-                	val = read_buf[0] <<4 | read_buf[1]>>4;
-	                data=val*VPS;//steps x volts per steps = volts
-        	        avg_voltage = avg_voltage + data;
-                	if(DSP==4) avg_voltage=avg_voltage/5;
-			}
-		        cout<<"avg_voltage "<<avg_voltage<<endl;
-	        pv = (6 - avg_voltage)*vPV;//process variable, volts x velocity per volts
+			//put voltage value from i2c here
+	        pv = (6 - x.FV)*vPV;//process variable, volts x velocity per volts
         	cout<<"pv "<<pv<<endl;
 	        inc = xpid.calculate(setpoint , pv);
 	        cout<<"inc "<<inc<<endl;
@@ -421,42 +693,6 @@ int linear_pid(int pid_linear, double CVspeed, int ramp_step, int step_total, in
 	return linear_step;
 }
 
-int init_i2c(){
-	int file;
-	int I2CAddress=0x48;
-        const char *filename = "/dev/i2c-1";
-	uint8_t config[3];
-	uint8_t address[1];
-	
-	if ((file = open(filename, O_RDWR)) < 0) {
-		/* ERROR HANDLING: you can check errno to see what went wrong */
-		perror("Failed to open the i2c bus");
-		exit(1);
-	}
-
-	if(ioctl(file,I2C_SLAVE,I2CAddress)<0){
-		/* ERROR HANDLING; you can check errno to see what went wrong */
-		perror("Failed to connect");
-		exit(1);
-	}
-
-	config[0]=0x01;//points to config register
-	config[1]=0xC0;//MSB config register 1100 0000 FSR=6.144, AIN0 to GND
-	config[2]=0x83;//LSB config register
-	address[0]=0x00;//points to conversion register
-
-	if(write(file, config,3)!=3){//if we dont pass all 3 indexes something went wrong
-		perror("Write to config register");
-		exit(1);
-	}
-	if(write(file, address,1)!=1){
-                perror("Write to address register");
-                exit(1);
-        }
-	usleep(100);//makes it more realiable
-
-return file;
-}
 
 int main(int argc, char *argv[]){
 
@@ -482,22 +718,36 @@ jetsonTX2GPIONumber solenoidOut = gpio395; // outter two solenoid rings
 jetsonTX2GPIONumber solenoidIn = gpio388; // inner one solenoids ring
 
 //right side
-jetsonTX2GPIONumber flow = gpio392; // flow from PLC
-jetsonTX2GPIONumber level = gpio296; // level from PLC
-jetsonTX2GPIONumber maintence = gpio481; //use water to clean from PLC
-jetsonTX2GPIONumber start_stop = gpio254; //start_stop program 
+jetsonTX2GPIONumber start_stop = gpio392; // Start from PLC
+jetsonTX2GPIONumber OFF_ON = gpio296; // OFF from PLC
+jetsonTX2GPIONumber maintenance = gpio481; //use water to clean from PLC
+jetsonTX2GPIONumber emerg_stop = gpio254; //emergency stop 
 
-jetsonTX2GPIONumber OFF = gpio430; //shut down everything
-jetsonTX2GPIONumber emerg_stop = gpio297; //interrupt motors in place
-jetsonTX2GPIONumber disable_Y = gpio467; //disable both Y motors
-jetsonTX2GPIONumber disable_X_EE = gpio394; //disable both X and EE motors
-jetsonTX2GPIONumber extra = gpio393; // not used
+jetsonTX2GPIONumber disable_Y = gpio430; //disables Y
+jetsonTX2GPIONumber disable_X_EE = gpio297; //diables EE and X
+jetsonTX2GPIONumber Extra1 = gpio467; //not used
+jetsonTX2GPIONumber Extra2 = gpio394; //not used
+jetsonTX2GPIONumber Extra3 = gpio393; // not used
 
 //disable : 1 = motors on, 0 = motors off
 
 
 //----export and set direction of gpio -----
-MotorInit(encoderL,dirYL,stepYL,encoderR,dirYR,stepYR,dirEE,stepEE,dirX,stepX,solenoidOut,solenoidIn,flow,level,maintence,start_stop,OFF,emerg_stop,disable_Y,disable_X_EE,extra);
+MotorInit(encoderL,dirYL,stepYL,encoderR,dirYR,stepYR,dirEE,stepEE,dirX,stepX,solenoidOut,solenoidIn,start_stop,OFF_ON,maintenance,emerg_stop,disable_Y,disable_X_EE,Extra1,Extra2,Extra3);
+
+//---------i2c initiate and home parameters X/EE---------
+struct i2c_struct i2c_analog; //hall effect and FV converter data for home 
+i2c_analog.enable = 1;
+
+pthread_t i2c_thread;
+pthread_t Xhome_td, EEhome_td;
+
+i2c_analog.step_X = stepX;
+i2c_analog.dir_X = dirX;
+
+i2c_analog.step_EE = stepEE;
+i2c_analog.dir_EE = dirEE;
+
 
 
 //--------Sramp parameters---------
@@ -511,22 +761,12 @@ int pid_linear;
 float return_50;
 
 //-------YSramp parameters----------
-gpioSetValue(dirYL,off); //CW
-gpioSetValue(dirYR,on); //CCW
-
-float height = 5;// move up 5 inches
-float velo_y = 4.68; //whatever speed
 int current_step;
-int step_total_y = step  *height;
-float linear_delay_y = 0.005625/velo_y;
-bool pre_size = 1;
-
-
-struct calc_Sramp_data x =  Sramp_function(height, velo_y, linear_ratio);//create calculations, store in struct
-int linear_step_y = step_total_y - 2*x.step;
-
-//--------ADC initiate----------
-int i2cfile = init_i2c(); //pass file descriptor
+int linear_step_y;
+float linear_delay_y;
+bool pre_size=1; //starts at large wreath
+int ascend_descend;
+int size_wreath;
 
 //--------fifo file------------
 const char * sizefifo = "/tmp/size"; //file locations
@@ -546,6 +786,11 @@ cout<<"open fdspeed"<<endl;
 int fdstart = open(startfifo, O_RDONLY);
 cout<<"open fdstart"<<endl;
 int fddata = open(datafifo, O_RDONLY);
+
+//---------PLC Buttons----------
+unsigned int START = 0; //store read value here for start/stop
+unsigned int OFF= 0; //OFF
+unsigned int MAINTENANCE= 0; //cleaning 
 
 //---------EE parameters---------
 struct endeffector td;
@@ -571,108 +816,38 @@ EDR.enable = 1;
 
 pthread_t YL, YR; // left/right y encoder
 
-//----------initiate-------------
+//---------start code---------------
+
+pthread_create(&i2c_thread, &attr, i2c_file, &i2c_analog);
 //move all to home position
 
 /*
+pthread_create(&Xhome_td, &attr, Xhome, &i2c_analog); //move X to home
+pthread_create(&EEhome_td, &attr, EEhome, &i2c_analog); //move EE to home
+*/
+
 //start encoders
 pthread_create(&YL, &attr, encoder, &EDL);
 pthread_create(&YR, &attr, encoder, &EDR);
 
 //move to large wreath position
-//accelerate y motors
-current_step=0;
-while(current_step<x.step){ //correct place wrong time
-        if(EDL.counter == EDR.counter){
-                gpioSetValue(stepYL,on);
-                gpioSetValue(stepYR,on);
-                usleep(1000000*x.delay_array[current_step]/2);
-                gpioSetValue(stepYL,off);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*x.delay_array[current_step]/2);
-                current_step++;
-        }
-        else if(EDL.counter > EDR.counter){
-                gpioSetValue(stepYR,on);
-                usleep(1000000*x.delay_array[current_step]/2);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*x.delay_array[current_step]/2);
-        }
-        else if(EDL.counter < EDR.counter){
-                gpioSetValue(stepYL,on);
-                usleep(1000000*x.delay_array[current_step]/2);
-                gpioSetValue(stepYL,off);
-                usleep(1000000*x.delay_array[current_step]/2);
-        }
-        else;
+ascend_descend = 1; //go up
+size_wreath = 1; //initiate to large wreath
 
-}
-
-//linear y motors
-current_step=0;
-
-while(current_step<linear_step_y){
-        if(EDL.counter == EDR.counter){
-                gpioSetValue(stepYL,on);
-                gpioSetValue(stepYR,on);
-                usleep(1000000*linear_delay_y/2);
-                gpioSetValue(stepYL,off);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*linear_delay_y/2);
-                current_step++;
-        }
-        else if(EDL.counter > EDR.counter){
-                gpioSetValue(stepYR,on);
-                usleep(1000000*linear_delay_y/2);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*linear_delay_y/2);
-        }
-        else if(EDL.counter < EDR.counter){
-                gpioSetValue(stepYL,on);
-                usleep(1000000*linear_delay_y/2);
-                gpioSetValue(stepYL,off);
-                usleep(1000000*linear_delay_y/2);
-        }
-        else;
-
-}
-
-//deceleration
-current_step=0;
-while(current_step<x.step){ //correct place wrong time
-        if(EDL.counter == EDR.counter){
-                gpioSetValue(stepYL,on);
-                gpioSetValue(stepYR,on);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-                gpioSetValue(stepYL,off);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-                current_step++;
-        }
-        else if(EDL.counter > EDR.counter){
-                gpioSetValue(stepYR,on);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-                gpioSetValue(stepYR,off);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-        }
-        else if(EDL.counter < EDR.counter){
-                gpioSetValue(stepYL,on);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-                gpioSetValue(stepYL,off);
-                usleep(1000000*x.delay_array[x.step-1-current_step]/2);
-        }
-        else;
-
-}
-
+Y_initiate(ascend_descend,size_wreath,linear_ratio,EDL,EDR,stepYL,stepYR,dirYL,dirYR);
 
 //end encoders
 EDL.enable=0;
 EDR.enable=0;
 pthread_join(YR, NULL);
 pthread_join(YL, NULL);
+
+/*
+pthread_join(Xhome_td, NULL);
+pthread_join(EEhome_td, NULL);
 */
 
+/*
 //--------start loop (main code)-------------
 
 
@@ -680,7 +855,19 @@ pthread_join(YL, NULL);
 
 //loop goes here
 
-for(int test=0;test<2;test++){ //insert off button
+//if stop, poll until want to start or turn off, prevents first movement when not wanted
+gpioGetValue(start_stop, &START); //pin for start from PLC
+while(START==1){ //start is 0 and stop is 1, while stopped stall program until start again
+	gpioGetValue(start_stop, &START);
+	gpioGetValue(OFF_ON, &OFF);
+		if(START==0) break; //break loop on start
+		if(OFF==0) break;
+		usleep(100); 
+	}
+cout<<"START" <<START<<endl;
+cout<<"OFF" <<OFF<<endl;
+
+while(OFF==1){
 //latch breaks when there is not new data, then it will move on to read values
 CVdata=0;
 while(CVdata==0){
@@ -693,7 +880,7 @@ read(fdspeed, &CVspeed, sizeof(CVspeed)); //CV velocity;
 cout<<"Speed = "<<CVspeed<<endl;
 
 cout<<"starting value "<<pre_size<<endl;
-linear_step_y = 100; //change later (override value from above)
+linear_step_y = 534; 
 linear_delay_y = 0.005625/1; //change size at 1 inch per second (arbitrary value to not skip steps)
 
 EDL.counter = 0; 
@@ -704,9 +891,9 @@ EDR.enable = 1;
 
 if (pre_size != CVsize){
 	if(CVsize == (1)){
-	
-	gpioSetValue(dirYL,on); //CW
-	gpioSetValue(dirYR,off); //CCW
+	//move to large wreath from small (going down)
+	gpioSetValue(dirYL,on); //CCW
+	gpioSetValue(dirYR,off); //CW
 
 	pthread_create(&YL, &attr, encoder, &EDL);
 	pthread_create(&YR, &attr, encoder, &EDR);
@@ -751,7 +938,7 @@ if (pre_size != CVsize){
 
 
 	pthread_create(&YL, &attr, encoder, &EDL);
-        pthread_create(&YR, &attr, encoder, &EDR);
+    pthread_create(&YR, &attr, encoder, &EDR);
 
 	current_step=0;
         while(current_step<linear_step_y){
@@ -791,7 +978,7 @@ if (pre_size != CVsize){
 	else;
 }
 	
-else;//belongs to if(pre_size != CVsize){
+else;//belongs to if(pre_size != CVsize)
 pre_size = CVsize;
 
 //loop read CV start here
@@ -820,11 +1007,11 @@ ramp_step = Sramp(up_down, d, CVspeed, linear_ratio, stepX);
 cout<<"ramp_step ="<<ramp_step<<endl;
 
 pid_linear = 0; // 1 = pid ; 0 = linear
-linear_step = linear_pid(pid_linear, CVspeed, ramp_step, step_total, i2cfile, stepX);
+linear_step = linear_pid(pid_linear, CVspeed, ramp_step, step_total, stepX,i2c_analog);
 
 up_down=0;
 ramp2_step = Sramp(up_down, d, CVspeed, linear_ratio, stepX); 
-cout<<"ramp_step ="<<ramp2_step<<endl;
+cout<<"ramp_step2 ="<<ramp2_step<<endl;
 
 pthread_join(tid, NULL); //stop end effector
 
@@ -848,24 +1035,71 @@ cout<<"ramp_step ="<<ramp_step_r<<endl;
 
 
 pid_linear = 0; // 1 = pid ; 0 = linear
-int linear_step_r = linear_pid(pid_linear, return_50, ramp_step, actual_step, i2cfile, stepX);
+int linear_step_r = linear_pid(pid_linear, return_50, ramp_step, actual_step, stepX,i2c_analog);
 
 up_down=0;
 int ramp2_step_r = Sramp(up_down, actual_distance, return_50, linear_ratio, stepX); 
-cout<<"ramp_step ="<<ramp2_step_r<<endl;
+cout<<"ramp_step2 ="<<ramp2_step_r<<endl;
 
 pthread_join(tid, NULL); //stop end effector
 
 int actual_step_r = ramp_step + linear_step + ramp2_step;//reference for actual distance traveled
 float actual_distance_r = actual_step/step;
 
+
+gpioGetValue(start_stop, &START); //pin for start from PLC, gives first value for loop
+while(START==1){ //start is 0 and stop is 1, while stopped stall program until start again
+	gpioGetValue(start_stop, &START);
+	gpioGetValue(OFF_ON, &OFF);
+		if(START==0) break; //break loop on start
+		if(OFF==0) break; //break loop on OFF
+		usleep(100); 
+	}
+cout<<"START " <<START<<endl;
+cout<<"OFF " <<OFF<<endl;
+
 } //loop until off
+ cout<<"OFF"<<endl;
 
 
+//return back to home
 
+pthread_create(&Xhome_td, &attr, Xhome, &i2c_analog); //move X to home
+pthread_create(&EEhome_td, &attr, EEhome, &i2c_analog); //move EE to home
+
+
+//start encoders
+EDL.counter = 0;
+EDR.counter = 0;
+
+EDL.enable = 1;
+EDR.enable = 1;
+
+pthread_create(&YL, &attr, encoder, &EDL);
+pthread_create(&YR, &attr, encoder, &EDR);
+
+//move back down
+ascend_descend = 0; //go up
+
+Y_initiate(ascend_descend,CVsize,linear_ratio,EDL,EDR,stepYL,stepYR,dirYL,dirYR);
+
+//end encoders
+EDL.enable=0;
+EDR.enable=0;
+pthread_join(YR, NULL);
+pthread_join(YL, NULL);
+
+pthread_join(Xhome_td, NULL);
+pthread_join(EEhome_td, NULL);
+
+i2c_analog.enable = 0; 
+pthread_join(i2c_thread, NULL);
+*/
 //---------------------------------------------
 signal(SIGINT, signalHandler);
-
+close(fdsize);
+close(fdspeed);
+close(fdstart);
 
 	return 0;
 }
